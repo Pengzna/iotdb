@@ -35,11 +35,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Collections;
-import java.util.stream.Stream;
 
 public class DeletionRecoverTest {
   private static final String FAKE_DATE_REGION_ID = "1";
@@ -53,10 +49,9 @@ public class DeletionRecoverTest {
 
   @Before
   public void setUp() throws Exception {
-    try (Stream<Path> pathStream = Files.walk(Paths.get(BASE_PATH), 1)) {
-      for (Path path : pathStream.toArray(Path[]::new)) {
-        FileUtils.deleteFileOrDirectory(path.toFile());
-      }
+    File baseDir = new File(BASE_PATH);
+    if (baseDir.exists()) {
+      FileUtils.deleteFileOrDirectory(baseDir);
     }
     DeletionResourceManager.buildForTest();
     deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_ID);

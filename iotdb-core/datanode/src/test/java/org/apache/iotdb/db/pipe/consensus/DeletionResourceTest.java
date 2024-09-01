@@ -44,10 +44,9 @@ import java.util.Collections;
 import java.util.stream.Stream;
 
 public class DeletionResourceTest {
-  private static final String FAKE_DATE_REGION_ID = "1";
+  private static final String[] FAKE_DATE_REGION_IDS = {"2", "3", "4", "5"};
   private static final String DELETION_BASE_DIR =
       IoTDBDescriptor.getInstance().getConfig().getPipeConsensusDeletionFileDir();
-  private static final String BASE_PATH = DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_ID;
   private static final int THIS_DATANODE_ID =
       IoTDBDescriptor.getInstance().getConfig().getDataNodeId();
   private DeletionResourceManager deletionResourceManager;
@@ -55,23 +54,23 @@ public class DeletionResourceTest {
   @Before
   public void setUp() throws Exception {
     DeletionResourceManager.buildForTest();
-    deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_ID);
   }
 
   @After
   public void tearDown() throws Exception {
-    deletionResourceManager.close();
-    try (Stream<Path> pathStream = Files.walk(Paths.get(BASE_PATH), 1)) {
-      for (Path path : pathStream.toArray(Path[]::new)) {
-        FileUtils.deleteFileOrDirectory(path.toFile());
+    for (String FAKE_DATE_REGION_ID : FAKE_DATE_REGION_IDS) {
+      File baseDir = new File(DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_ID);
+      if (baseDir.exists()) {
+        FileUtils.deleteFileOrDirectory(baseDir);
       }
     }
   }
 
   @Test
   public void testCreateBaseDir() {
+    deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_IDS[0]);
     File baseDir = new File(DELETION_BASE_DIR);
-    File dataRegionDir = new File(baseDir + File.separator + FAKE_DATE_REGION_ID);
+    File dataRegionDir = new File(baseDir + File.separator + FAKE_DATE_REGION_IDS[0]);
     Assert.assertTrue(baseDir.exists());
     Assert.assertTrue(dataRegionDir.exists());
   }
@@ -79,6 +78,7 @@ public class DeletionResourceTest {
   @Test
   public void testAddBatchDeletionResource()
       throws IllegalPathException, InterruptedException, IOException {
+    deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_IDS[1]);
     int deletionCount = 10;
     int rebootTimes = 0;
     PartialPath path = new PartialPath("root.vehicle.d2.s0");
@@ -93,13 +93,16 @@ public class DeletionResourceTest {
     }
     // Sleep to wait deletion being persisted
     Thread.sleep(1000);
-    Stream<Path> paths = Files.list(Paths.get(BASE_PATH));
+    Stream<Path> paths =
+        Files.list(Paths.get(DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_IDS[1]));
+    ;
     Assert.assertTrue(paths.anyMatch(Files::isRegularFile));
   }
 
   @Test
   public void testAddDeletionResourceTimeout()
       throws IllegalPathException, InterruptedException, IOException {
+    deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_IDS[2]);
     int rebootTimes = 0;
     PartialPath path = new PartialPath("root.vehicle.d2.s0");
     DeleteDataNode deleteDataNode =
@@ -111,13 +114,15 @@ public class DeletionResourceTest {
     // Only register one deletionResource
     deletionResourceManager.registerDeletionResource(deletionEvent);
     // Sleep to wait deletion being persisted
-    Thread.sleep(1000);
-    Stream<Path> paths = Files.list(Paths.get(BASE_PATH));
+    Thread.sleep(5000);
+    Stream<Path> paths =
+        Files.list(Paths.get(DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_IDS[2]));
     Assert.assertTrue(paths.anyMatch(Files::isRegularFile));
   }
 
   @Test
   public void testDeletionRemove() throws IllegalPathException, InterruptedException, IOException {
+    deletionResourceManager = DeletionResourceManager.getInstance(FAKE_DATE_REGION_IDS[3]);
     // new a deletion
     int rebootTimes = 0;
     PartialPath path = new PartialPath("root.vehicle.d2.s0");
@@ -132,13 +137,15 @@ public class DeletionResourceTest {
     deletionEvent.increaseReferenceCount("test");
     // Sleep to wait deletion being persisted
     Thread.sleep(1000);
-    Stream<Path> paths = Files.list(Paths.get(BASE_PATH));
+    Stream<Path> paths =
+        Files.list(Paths.get(DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_IDS[3]));
     Assert.assertTrue(paths.anyMatch(Files::isRegularFile));
     // Remove deletion
     deletionEvent.decreaseReferenceCount("test", false);
     // Sleep to wait deletion being removed
     Thread.sleep(1000);
-    Stream<Path> newPaths = Files.list(Paths.get(BASE_PATH));
+    Stream<Path> newPaths =
+        Files.list(Paths.get(DELETION_BASE_DIR + File.separator + FAKE_DATE_REGION_IDS[3]));
     Assert.assertFalse(newPaths.anyMatch(Files::isRegularFile));
   }
 }
