@@ -56,7 +56,7 @@
         <highPerformanceMode.configNodeConsensus>Ratis</highPerformanceMode.configNodeConsensus>
         <highPerformanceMode.configNodeNumber>1</highPerformanceMode.configNodeNumber>
         <highPerformanceMode.dataNodeNumber>3</highPerformanceMode.dataNodeNumber>
-        <highPerformanceMode.dataRegionConsensus>IoT</highPerformanceMode.dataRegionConsensus>
+        <highPerformanceMode.dataRegionConsensus>Pipe</highPerformanceMode.dataRegionConsensus>
         <highPerformanceMode.dataRegionReplicaNumber>2</highPerformanceMode.dataRegionReplicaNumber>
         <highPerformanceMode.schemaRegionConsensus>Ratis</highPerformanceMode.schemaRegionConsensus>
         <highPerformanceMode.schemaRegionReplicaNumber>3</highPerformanceMode.schemaRegionReplicaNumber>
