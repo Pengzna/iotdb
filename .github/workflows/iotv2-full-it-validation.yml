@@ -1,0 +1,192 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+name: IoTV2 full IT supplements
+
+on:
+  push:
+    branches:
+      - codex/iotv2-full-it-ci
+
+permissions:
+  contents: read
+
+env:
+  MAVEN_ARGS: --batch-mode --no-transfer-progress
+  MAVEN_OPTS: -Xmx2g -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false
+  SOURCE_HEAD: fc2e2c35cfa0933a18b4dc3a87d029c89f361742
+
+jobs:
+  verify:
+    name: ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: DailyIT
+            profile: DailyIT
+            forks: 2
+          - suite: ManualIT
+            profile: ManualIT
+            forks: 1
+          - suite: SimpleIT-with-direct-memory
+            profile: SimpleIT
+            forks: 2
+          - suite: TableClusterIT-with-query-resources
+            profile: TableClusterIT
+            forks: 1
+          - suite: RemoteIT
+            profile: SimpleIT
+            forks: 1
+          - suite: standalone-benchmarks
+            profile: SimpleIT
+            forks: 1
+          - suite: cluster-export-benchmark
+            profile: ClusterIT
+            forks: 1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Verify source revision
+        run: |
+          test "$(git rev-parse HEAD^)" = "$SOURCE_HEAD"
+          git diff --exit-code "$SOURCE_HEAD" HEAD -- . \
+            ':(exclude).github/workflows/iotv2-full-it-validation.yml' \
+            ':(exclude).github/scripts/IoTV2RemoteCheck.java'
+          python3 .github/scripts/check-it-selection.py
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: 17
+          cache: maven
+      - name: Run integration tests
+        env:
+          SUITE: ${{ matrix.suite }}
+          PROFILE: ${{ matrix.profile }}
+          FORKS: ${{ matrix.forks }}
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.core.somaxconn=65535
+          args=(
+            -P "with-integration-tests,$PROFILE"
+            -DskipUTs -pl integration-test -am
+            "-DintegrationTest.forkCount=$FORKS"
+            -DDataNodeMaxDirectMemorySize=768
+            -DConfigNodeMaxHeapSize=1024
+            -DDataNodeMaxHeapSize=1024
+            -DintegrationTest.clusterReadyRetryCount=90
+          )
+          targeted=()
+          case "$SUITE" in
+            RemoteIT)
+              targeted=(-Dit.test=IoTDBMinByIT)
+              ;;
+            standalone-benchmarks)
+              targeted=(
+                '-Dit.test=ExportDataMeasurementIT#benchmarkTwentyThousandMeasurements,IoTDBAlignedTVListBitMapPerformanceIT#testNullHeavyAlignedTabletWritePerformance,IoTDBAlignedTVListPrimitiveArrayPerformanceIT#testAlignedWritePerformance'
+                -Dexport.measurements.benchmark=true
+                -Diotdb.aligned.bitmap.perf.enabled=true
+                -Diotdb.aligned.lazy-allocation.perf.enabled=true
+              )
+              ;;
+            cluster-export-benchmark)
+              targeted=('-Dit.test=ExportDataMeasurementIT#benchmarkTwentyThousandMeasurements' -Dexport.measurements.benchmark=true)
+              ;;
+            TableClusterIT-with-query-resources)
+              printf '%s\n' 'query_thread_count=12' > integration-test/.iotv2-ci-query.properties
+              args+=(-DDataNodeMaxHeapSize=1536 -DDefaultDataNodeCommonProperties=/.iotv2-ci-query.properties)
+              ;;
+          esac
+          if (( ${#targeted[@]} )); then
+            args+=(-DfailIfNoTests=false -Dfailsafe.failIfNoSpecifiedTests=false "${targeted[@]}")
+          fi
+          mvn clean verify "${args[@]}"
+      - name: Run each RemoteIT against a fresh IoTV2 service
+        if: matrix.suite == 'RemoteIT'
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import xml.etree.ElementTree as ET
+
+          root = Path.cwd()
+          module = root / 'integration-test'
+          target = module / 'target'
+          reports = target / 'remote-results'
+          reports.mkdir()
+          sample = next((target / 'failsafe-reports').glob('TEST-*IoTDBMinByIT.xml'))
+          properties = {item.get('name'): item.get('value')
+                        for item in ET.parse(sample).findall('properties/property')}
+          classpath = properties['surefire.test.class.path']
+          opens = re.findall(r'--add-opens=\S+', (root / 'pom.xml').read_text())
+          java_source = root / '.github/scripts/IoTV2RemoteCheck.java'
+          tests = []
+          for path in sorted((module / 'src/test/java/org/apache/iotdb/db/it').glob('*.java')):
+              if re.search(r'@Category\([^)]*\bRemoteIT\.class', path.read_text()):
+                  tests.append('org.apache.iotdb.db.it.' + path.stem)
+          if not tests:
+              raise RuntimeError('No RemoteIT classes found')
+          failed = False
+          for test in tests:
+              name = test.rsplit('.', 1)[1]
+              with tempfile.TemporaryDirectory(prefix='iotv2-remote-') as directory:
+                  work = Path(directory)
+                  fixture = work / 'target'
+                  fixture.mkdir()
+                  shutil.copytree(target / 'template-node', fixture / 'template-node')
+                  (fixture / 'template-node-share').symlink_to(target / 'template-node-share',
+                                                               target_is_directory=True)
+                  with (reports / (name + '.log')).open('w') as log:
+                      proc = subprocess.run(
+                          ['java', *opens, '-Xmx512m', '-DTestEnv=Remote',
+                           '-DRemoteIp=127.0.0.1', '-DDataNodeMaxDirectMemorySize=768',
+                           '-DintegrationTest.clusterReadyRetryCount=90',
+                           '-cp', classpath, str(java_source), test],
+                          cwd=work, stdout=log, stderr=subprocess.STDOUT, timeout=360)
+                  print(f'{name}: {proc.returncode}', flush=True)
+                  failed |= proc.returncode != 0
+                  cluster_logs = fixture / 'cluster-logs'
+                  if cluster_logs.is_dir() and proc.returncode != 0:
+                      shutil.copytree(cluster_logs, reports / (name + '-nodes'))
+          raise SystemExit(failed)
+          PYTHON
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iotv2-${{ matrix.suite }}-reports
+          path: |
+            integration-test/target/failsafe-reports
+            integration-test/target/remote-results
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload node logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iotv2-${{ matrix.suite }}-nodes
+          path: integration-test/target/cluster-logs
+          if-no-files-found: warn
+          retention-days: 3
