@@ -17,12 +17,12 @@
 # under the License.
 #
 
-name: IoTV2 Pipe lifecycle comparison
+name: IoTV2 Pipe TsFile fix validation
 
 on:
   push:
     branches:
-      - codex/iotv2-pipe-lifecycle-ci
+      - codex/iotv2-pipe-tsfile-empty-fix
 
 permissions:
   contents: read
@@ -31,6 +31,7 @@ env:
   MAVEN_ARGS: --batch-mode --no-transfer-progress
   MAVEN_OPTS: -Xmx2g -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false
   SOURCE_HEAD: fc2e2c35cfa0933a18b4dc3a87d029c89f361742
+  FIX_HEAD: 958df5358529501e5bfd500191dc75a866ae16b6
 
 jobs:
   compare:
@@ -40,35 +41,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        consensus: [IoT, IoTV2]
+        consensus: [IoTV2]
         method: [testLifeCycleLogMode, testLifeCycleHybridMode]
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 2
+          fetch-depth: 4
       - name: Verify source revision
         run: |
-          test "$(git rev-parse HEAD^)" = "$SOURCE_HEAD"
-          git diff --exit-code "$SOURCE_HEAD" HEAD -- . \
+          test "$(git rev-parse HEAD^^^)" = "$SOURCE_HEAD"
+          test "$(git rev-parse HEAD^)" = "$FIX_HEAD"
+          git diff --exit-code "$FIX_HEAD" HEAD -- . \
             ':(exclude).github/workflows/iotv2-pipe-lifecycle-comparison.yml'
       - uses: actions/setup-java@v5
         with:
           distribution: corretto
           java-version: 17
           cache: maven
+      - name: Test mutable TsFile resource
+        if: matrix.method == 'testLifeCycleLogMode'
+        run: |
+          mvn test -pl iotdb-core/datanode -am \
+            -Dtest=TsFileResourceTest -Dsurefire.failIfNoSpecifiedTests=false
       - name: Run one Pipe lifecycle method
         env:
           CONSENSUS: ${{ matrix.consensus }}
           METHOD: ${{ matrix.method }}
         run: |
-          mvn clean verify -P with-integration-tests,MultiClusterIT2DualTableManualBasic \
-            -pl integration-test -am -DskipUTs \
-            -DintegrationTest.clusterReadyRetryCount=90 -DintegrationTest.forkCount=1 \
-            -DConfigNodeMaxHeapSize=256 -DDataNodeMaxHeapSize=1024 -DDataNodeMaxDirectMemorySize=768 \
-            -DClusterConfigurations=HighPerformanceMode,HighPerformanceMode \
-            "-DhighPerformanceMode.dataRegionConsensus=$CONSENSUS" \
-            "-Dit.test=org.apache.iotdb.pipe.it.dual.tablemodel.manual.basic.IoTDBPipeLifeCycleIT#$METHOD" \
-            -DfailIfNoTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Pipe lifecycle attempt $attempt"
+            mvn verify -P with-integration-tests,MultiClusterIT2DualTableManualBasic \
+              -pl integration-test -am -DskipUTs \
+              -DintegrationTest.clusterReadyRetryCount=90 -DintegrationTest.forkCount=1 \
+              -DConfigNodeMaxHeapSize=256 -DDataNodeMaxHeapSize=1024 -DDataNodeMaxDirectMemorySize=768 \
+              -DClusterConfigurations=HighPerformanceMode,HighPerformanceMode \
+              "-DhighPerformanceMode.dataRegionConsensus=$CONSENSUS" \
+              "-Dit.test=org.apache.iotdb.pipe.it.dual.tablemodel.manual.basic.IoTDBPipeLifeCycleIT#$METHOD" \
+              -DfailIfNoTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+          done
       - name: Check executed method and consensus
         if: always()
         env:
