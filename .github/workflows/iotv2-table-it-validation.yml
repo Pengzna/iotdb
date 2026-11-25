@@ -1,0 +1,79 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+name: IoTV2 table-cluster IT
+
+on:
+  push:
+    branches:
+      - codex/iotv2-table-it-ci
+
+permissions:
+  contents: read
+
+env:
+  MAVEN_ARGS: --batch-mode --no-transfer-progress
+  MAVEN_OPTS: -Xmx2g -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false
+  SOURCE_HEAD: fc2e2c35cfa0933a18b4dc3a87d029c89f361742
+
+jobs:
+  table-cluster:
+    name: TableClusterIT with query resources
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Verify source revision
+        run: |
+          test "$(git rev-parse HEAD^)" = "$SOURCE_HEAD"
+          git diff --exit-code "$SOURCE_HEAD" HEAD -- . \
+            ':(exclude).github/workflows/iotv2-table-it-validation.yml'
+          python3 .github/scripts/check-it-selection.py
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: 17
+          cache: maven
+      - name: Run TableClusterIT
+        run: |
+          sudo sysctl -w net.core.somaxconn=65535
+          printf '%s\n' 'query_thread_count=12' > .github/iotv2-ci-query.properties
+          mvn clean verify -P with-integration-tests,TableClusterIT \
+            -pl integration-test -am -DskipUTs \
+            -DintegrationTest.forkCount=1 \
+            -DConfigNodeMaxHeapSize=1024 -DDataNodeMaxHeapSize=1536 \
+            -DDataNodeMaxDirectMemorySize=768 \
+            -DintegrationTest.clusterReadyRetryCount=90 \
+            -DDefaultDataNodeCommonProperties=/../.github/iotv2-ci-query.properties
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iotv2-table-cluster-reports
+          path: integration-test/target/failsafe-reports
+          retention-days: 7
+      - name: Upload node logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: iotv2-table-cluster-nodes
+          path: integration-test/target/cluster-logs
+          retention-days: 3
