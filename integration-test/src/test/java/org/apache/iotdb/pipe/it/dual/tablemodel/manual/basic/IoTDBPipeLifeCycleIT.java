@@ -26,6 +26,8 @@ import org.apache.iotdb.db.it.utils.TestUtils;
 import org.apache.iotdb.it.env.cluster.node.DataNodeWrapper;
 import org.apache.iotdb.it.framework.IoTDBTestRunner;
 import org.apache.iotdb.itbase.category.MultiClusterIT2DualTableManualBasic;
+import org.apache.iotdb.itbase.env.BaseEnv;
+import org.apache.iotdb.isession.SessionConfig;
 import org.apache.iotdb.pipe.it.dual.tablemodel.TableModelUtils;
 import org.apache.iotdb.pipe.it.dual.tablemodel.manual.AbstractPipeTableModelSharedClusterIT;
 import org.apache.iotdb.rpc.TSStatusCode;
@@ -37,7 +39,13 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
 
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -244,7 +252,7 @@ public class IoTDBPipeLifeCycleIT extends AbstractPipeTableModelSharedClusterIT 
       TableModelUtils.createDataBaseAndTable(senderEnv, "test2", "test2");
       TableModelUtils.insertData("test2", "test2", 0, 100, senderEnv);
 
-      TableModelUtils.assertCountData("test2", "test2", 100, receiverEnv, handleFailure);
+      assertCountWithDiagnostics("test2", 100, handleFailure);
     }
   }
 
@@ -345,11 +353,55 @@ public class IoTDBPipeLifeCycleIT extends AbstractPipeTableModelSharedClusterIT 
 
       TableModelUtils.insertData("test", "test", 100, 200, senderEnv);
 
-      TableModelUtils.assertCountData("test", "test", 200, receiverEnv, handleFailure);
+      assertCountWithDiagnostics("test", 200, handleFailure);
 
       TableModelUtils.insertData("test", "test", 200, 300, senderEnv);
 
       TableModelUtils.assertCountData("test", "test", 300, receiverEnv, handleFailure);
+    }
+  }
+
+  private void assertCountWithDiagnostics(
+      final String table, final int expected, final Consumer<String> handleFailure) {
+    try {
+      TestUtils.executeNonQueryWithRetry(receiverEnv, "flush");
+      TestUtils.assertDataEventuallyOnEnv(
+          receiverEnv,
+          TableModelUtils.getQueryCountSql(table),
+          "_col0,",
+          Collections.singleton(expected + ","),
+          45,
+          table,
+          handleFailure);
+    } catch (AssertionError failure) {
+      logVisibleRows("sender", senderEnv, table);
+      logVisibleRows("receiver", receiverEnv, table);
+      throw failure;
+    }
+  }
+
+  private void logVisibleRows(final String role, final BaseEnv env, final String table) {
+    for (final DataNodeWrapper node : env.getDataNodeWrapperList()) {
+      try (Connection connection =
+              env.getConnection(
+                  node, SessionConfig.DEFAULT_USER, SessionConfig.DEFAULT_PASSWORD,
+                  BaseEnv.TABLE_SQL_DIALECT);
+          Statement statement = connection.createStatement()) {
+        statement.execute("use " + table);
+        for (String query : List.of("select count(*) from ", "select cast(time as bigint) from ",
+            "show devices from ")) {
+          try (ResultSet result = statement.executeQuery(query + table)) {
+            final List<String> values = new ArrayList<>();
+            while (result.next()) {
+              values.add(result.getString(1));
+            }
+            System.out.printf("PIPE DIAG %s %s %s size=%d values=%s%n", role, node.getPort(),
+                query, values.size(), values);
+          }
+        }
+      } catch (SQLException | AssertionError failure) {
+        System.out.printf("PIPE DIAG %s %s: %s%n", role, node.getPort(), failure);
+      }
     }
   }
 
