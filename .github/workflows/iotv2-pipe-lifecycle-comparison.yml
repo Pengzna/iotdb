@@ -17,12 +17,12 @@
 # under the License.
 #
 
-name: IoTV2 Pipe lifecycle comparison
+name: IoTV2 Pipe read diagnostics
 
 on:
   push:
     branches:
-      - codex/iotv2-pipe-lifecycle-ci
+      - codex/iotv2-pipe-read-diagnostics-fixed
 
 permissions:
   contents: read
@@ -40,17 +40,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        consensus: [IoT, IoTV2]
+        consensus: [IoTV2]
         method: [testLifeCycleLogMode, testLifeCycleHybridMode]
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Verify source revision
         run: |
-          test "$(git rev-parse HEAD^)" = "$SOURCE_HEAD"
+          test "$(git rev-parse HEAD^^)" = "$SOURCE_HEAD"
           git diff --exit-code "$SOURCE_HEAD" HEAD -- . \
-            ':(exclude).github/workflows/iotv2-pipe-lifecycle-comparison.yml'
+            ':(exclude).github/workflows/iotv2-pipe-lifecycle-comparison.yml' \
+            ':(exclude)integration-test/src/test/java/org/apache/iotdb/pipe/it/dual/tablemodel/manual/basic/IoTDBPipeLifeCycleIT.java'
       - uses: actions/setup-java@v5
         with:
           distribution: corretto
