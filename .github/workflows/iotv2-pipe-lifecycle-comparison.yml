@@ -1,0 +1,106 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+name: IoTV2 Pipe lifecycle comparison
+
+on:
+  push:
+    branches:
+      - codex/iotv2-pipe-lifecycle-ci
+
+permissions:
+  contents: read
+
+env:
+  MAVEN_ARGS: --batch-mode --no-transfer-progress
+  MAVEN_OPTS: -Xmx2g -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false
+  SOURCE_HEAD: fc2e2c35cfa0933a18b4dc3a87d029c89f361742
+
+jobs:
+  compare:
+    name: ${{ matrix.consensus }} / ${{ matrix.method }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        consensus: [IoT, IoTV2]
+        method: [testLifeCycleLogMode, testLifeCycleHybridMode]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Verify source revision
+        run: |
+          test "$(git rev-parse HEAD^)" = "$SOURCE_HEAD"
+          git diff --exit-code "$SOURCE_HEAD" HEAD -- . \
+            ':(exclude).github/workflows/iotv2-pipe-lifecycle-comparison.yml'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: corretto
+          java-version: 17
+          cache: maven
+      - name: Run one Pipe lifecycle method
+        env:
+          CONSENSUS: ${{ matrix.consensus }}
+          METHOD: ${{ matrix.method }}
+        run: |
+          mvn clean verify -P with-integration-tests,MultiClusterIT2DualTableManualBasic \
+            -pl integration-test -am -DskipUTs \
+            -DintegrationTest.clusterReadyRetryCount=90 -DintegrationTest.forkCount=1 \
+            -DConfigNodeMaxHeapSize=256 -DDataNodeMaxHeapSize=1024 -DDataNodeMaxDirectMemorySize=768 \
+            -DClusterConfigurations=HighPerformanceMode,HighPerformanceMode \
+            "-DhighPerformanceMode.dataRegionConsensus=$CONSENSUS" \
+            "-Dit.test=org.apache.iotdb.pipe.it.dual.tablemodel.manual.basic.IoTDBPipeLifeCycleIT#$METHOD" \
+            -DfailIfNoTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+      - name: Check executed method and consensus
+        if: always()
+        env:
+          CONSENSUS: ${{ matrix.consensus }}
+          METHOD: ${{ matrix.method }}
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import os
+          from xml.etree import ElementTree
+
+          root = Path('integration-test/target')
+          suite = next((root / 'failsafe-reports').glob('TEST-*IoTDBPipeLifeCycleIT.xml'))
+          cases = ElementTree.parse(suite).findall('testcase')
+          if len(cases) != 1 or cases[0].find('skipped') is not None:
+              raise RuntimeError('Expected exactly one executed method')
+          case = cases[0]
+          method = os.environ['METHOD']
+          if case.get('name') != method and f'Run {method}' not in (case.findtext('system-out') or ''):
+              raise RuntimeError('The test report does not contain the selected method')
+          tag = 'Ratis-Ratis-' + os.environ['CONSENSUS'] + '-3-2'
+          dirs = [path.name for path in (root / 'cluster-logs').glob('IoTDBPipeLifeCycleIT/*/*/*') if path.is_dir()]
+          if set(dirs) != {f'0-{tag}', f'1-{tag}'}:
+              raise RuntimeError(f'Unexpected sender and receiver configurations: {dirs}')
+          print(f'Executed {method} with both clusters configured for {os.environ["CONSENSUS"]}')
+          PYTHON
+      - name: Upload test and node logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pipe-${{ matrix.consensus }}-${{ matrix.method }}
+          path: |
+            integration-test/target/failsafe-reports
+            integration-test/target/cluster-logs
+          retention-days: 7
